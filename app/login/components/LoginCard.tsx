@@ -25,7 +25,7 @@ export function LoginCard(props: LoginCardProps) {
       <LoginForm {...props} />
 
       <p className="mt-6 text-sm text-stone-500">
-        Demo-login: kim@whiskyklubben.dk / whisky123
+        Indtast din klub-e-mail og adgangskode for at logge ind.
       </p>
     </div>
   );

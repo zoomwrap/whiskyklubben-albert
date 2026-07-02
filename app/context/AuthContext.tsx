@@ -19,88 +19,199 @@ type User = {
   role: UserRole;
 };
 
-type AuthContextValue = {
-  user: User | null;
-  isLoaded: boolean;
-  login: (email: string, password: string) => User | null;
-  logout: () => void;
+type AuthState = {
+  accessToken: string;
+  refreshToken?: string;
+  user: User;
 };
 
-const storageKey = "whiskyklubben-user";
+type AuthContextValue = {
+  user: User | null;
+  accessToken: string | null;
+  isLoaded: boolean;
+  login: (email: string, password: string) => Promise<User | null>;
+  logout: () => void;
+  fetchWithAuth: (input: RequestInfo, init?: RequestInit) => Promise<Response>;
+};
 
-const demoUsers: Array<User & { password: string }> = [
-  {
-    id: "1",
-    name: "Kim",
-    email: "kim@whiskyklubben.dk",
-    password: "whisky123",
-    role: "ADMIN",
-  },
-  {
-    id: "2",
-    name: "Michael",
-    email: "michael@whiskyklubben.dk",
-    password: "whisky456",
-    role: "MEMBER",
-  },
-];
+const storageKey = "whiskyklubben-auth";
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:5000";
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
-function getStoredUser() {
+function getStoredAuthState(): AuthState | null {
   if (typeof window === "undefined") {
     return null;
   }
 
   try {
-    const storedUser = window.localStorage.getItem(storageKey);
-    return storedUser ? (JSON.parse(storedUser) as User) : null;
+    const stored = window.localStorage.getItem(storageKey);
+    if (!stored) {
+      return null;
+    }
+
+    const parsed = JSON.parse(stored) as AuthState;
+    if (
+      !parsed?.accessToken ||
+      !parsed?.user ||
+      typeof parsed.user.id !== "string" ||
+      typeof parsed.user.email !== "string"
+    ) {
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function refreshAccessToken(
+  refreshToken: string,
+): Promise<{ accessToken: string; refreshToken?: string } | null> {
+  try {
+    const response = await fetch(`${apiBaseUrl}/api/auth/refresh`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ refreshToken }),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as {
+      accessToken: string;
+      refreshToken?: string;
+    };
   } catch {
     return null;
   }
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(getStoredUser);
+  const [authState, setAuthState] = useState<AuthState | null>(() =>
+    getStoredAuthState(),
+  );
   const isLoaded = true;
 
   useEffect(() => {
-    if (user) {
-      window.localStorage.setItem(storageKey, JSON.stringify(user));
+    if (authState) {
+      window.localStorage.setItem(storageKey, JSON.stringify(authState));
     } else {
       window.localStorage.removeItem(storageKey);
     }
-  }, [user]);
+  }, [authState]);
 
-  const login = useCallback((email: string, password: string) => {
-    const foundUser = demoUsers.find(
-      (candidate) =>
-        candidate.email.toLowerCase() === email.toLowerCase() &&
-        candidate.password === password,
-    );
+  const login = useCallback(async (email: string, password: string) => {
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/auth/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ email, password }),
+      });
 
-    if (!foundUser) {
+      if (!response.ok) {
+        return null;
+      }
+
+      const data = (await response.json()) as {
+        accessToken: string;
+        refreshToken?: string;
+        user: User;
+      };
+
+      const newAuthState: AuthState = {
+        accessToken: data.accessToken,
+        refreshToken: data.refreshToken,
+        user: data.user,
+      };
+
+      setAuthState(newAuthState);
+      return data.user;
+    } catch {
       return null;
     }
-
-    const safeUser: User = {
-      id: foundUser.id,
-      name: foundUser.name,
-      email: foundUser.email,
-      role: foundUser.role,
-    };
-
-    setUser(safeUser);
-    return safeUser;
   }, []);
 
   const logout = useCallback(() => {
-    setUser(null);
+    setAuthState(null);
   }, []);
 
+  const fetchWithAuth = useCallback(
+    async (input: RequestInfo, init: RequestInit = {}) => {
+      const token = authState?.accessToken;
+      if (!token) {
+        return fetch(input, init);
+      }
+
+      const authHeaders = new Headers(init.headers ?? undefined);
+      authHeaders.set("Authorization", `Bearer ${token}`);
+      authHeaders.set(
+        "Content-Type",
+        authHeaders.get("Content-Type") ?? "application/json",
+      );
+
+      const response = await fetch(input, {
+        ...init,
+        headers: authHeaders,
+      });
+
+      if (response.status !== 401) {
+        return response;
+      }
+
+      if (!authState?.refreshToken) {
+        logout();
+        return response;
+      }
+
+      const refreshed = await refreshAccessToken(authState.refreshToken);
+      if (!refreshed) {
+        logout();
+        return response;
+      }
+
+      const updatedAuthState: AuthState = {
+        ...authState,
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken ?? authState.refreshToken,
+      };
+
+      setAuthState(updatedAuthState);
+
+      const retryHeaders = new Headers(init.headers ?? undefined);
+      retryHeaders.set(
+        "Authorization",
+        `Bearer ${updatedAuthState.accessToken}`,
+      );
+      retryHeaders.set(
+        "Content-Type",
+        retryHeaders.get("Content-Type") ?? "application/json",
+      );
+
+      return fetch(input, {
+        ...init,
+        headers: retryHeaders,
+      });
+    },
+    [authState, logout],
+  );
+
   const value = useMemo(
-    () => ({ user, isLoaded, login, logout }),
-    [isLoaded, login, logout, user],
+    () => ({
+      user: authState?.user ?? null,
+      accessToken: authState?.accessToken ?? null,
+      isLoaded,
+      login,
+      logout,
+      fetchWithAuth,
+    }),
+    [authState, isLoaded, login, logout, fetchWithAuth],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

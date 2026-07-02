@@ -14,8 +14,8 @@ export default function AdminPage() {
         <ContentStack>
           <Surface>
             <PageIntro eyebrow="Adminpanel" title="Administrer whiskyklubben">
-              Her kan Kim oprette smagninger, redigere whiskyer og administrere
-              medlemmer.
+              Her kan admin oprette smagninger, redigere whiskyer og
+              administrere medlemmer.
             </PageIntro>
           </Surface>
 
